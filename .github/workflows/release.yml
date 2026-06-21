@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goreleaser-id: linux
+          - os: macos-latest
+            goreleaser-id: darwin
+          - os: windows-latest
+            goreleaser-id: windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Install Linux GUI deps
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev libxkbcommon-dev
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: build --clean --id ${{ matrix.goreleaser-id }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Archive binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p archives
+          find dist -mindepth 1 -maxdepth 1 -type d | while read -r d; do
+            name="intsdk_${version}_$(basename "$d")"
+            cp -r data "$d"/
+            [ -f LICENSE ] && cp LICENSE "$d"/
+            [ -f README.md ] && cp README.md "$d"/
+            if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+              (cd "$d" && 7z a -tzip "../../archives/${name}.zip" .)
+            else
+              tar -czf "archives/${name}.tar.gz" -C "$d" .
+            fi
+          done
+
+      - name: Upload archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.goreleaser-id }}
+          path: archives/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all archives
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum * > checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

@@ -1,0 +1,12 @@
+/intsdk
+/intsdk.exe
+*-*.zip
+dist/
+.intsdk/
+*.test
+*.out
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
