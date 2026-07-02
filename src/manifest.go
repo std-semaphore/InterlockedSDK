@@ -17,7 +17,7 @@ import (
 	"github.com/Masterminds/semver/v3"
 )
 
-var signedFolders = []string{"Consists", "Diagrams", "Paths", "Static", "Templates", "TIPLOCs"}
+var signedFolders = []string{"Consists", "Diagrams", "Paths", "Static", "Templates", "TIPLOCs", "TimingProfiles"}
 
 type Manifest struct {
 	Manifest ManifestMeta   `toml:"manifest"`
@@ -77,11 +77,14 @@ func isSignedPath(name string) bool {
 	if name == "manifest.toml" {
 		return true
 	}
+	// Match any depth under a signed top-level folder, e.g.
+	// "Static/Connections.toml" as well as
+	// "Static/Definitions/AAS.toml" or "Static/StaticTemplates/Foo.toml".
 	parts := strings.SplitN(name, "/", 2)
 	if len(parts) != 2 {
 		return false
 	}
-	if strings.Contains(parts[1], "/") || filepath.Ext(parts[1]) != ".toml" {
+	if filepath.Ext(parts[1]) != ".toml" {
 		return false
 	}
 	for _, f := range signedFolders {
@@ -123,24 +126,42 @@ func compile(dir string, privKey ed25519.PrivateKey) ([]byte, map[string]int, er
 	files["manifest.toml"] = manifestData
 
 	for _, folder := range signedFolders {
-		entries, err := os.ReadDir(filepath.Join(dir, folder))
+		root := filepath.Join(dir, folder)
+		info, err := os.Stat(root)
 		if os.IsNotExist(err) {
 			continue
 		}
 		if err != nil {
 			return nil, nil, fmt.Errorf("read %s/: %w", folder, err)
 		}
-		for _, e := range entries {
-			if e.IsDir() || filepath.Ext(e.Name()) != ".toml" {
-				continue
-			}
-			relPath := folder + "/" + e.Name()
-			data, err := os.ReadFile(filepath.Join(dir, relPath))
+		if !info.IsDir() {
+			continue
+		}
+
+		err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
-				return nil, nil, fmt.Errorf("read %s: %w", relPath, err)
+				return err
+			}
+			if d.IsDir() || filepath.Ext(d.Name()) != ".toml" {
+				return nil
+			}
+
+			rel, err := filepath.Rel(dir, path)
+			if err != nil {
+				return err
+			}
+			relPath := filepath.ToSlash(rel)
+
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return fmt.Errorf("read %s: %w", relPath, err)
 			}
 			files[relPath] = data
 			folderCounts[folder]++
+			return nil
+		})
+		if err != nil {
+			return nil, nil, err
 		}
 	}
 
