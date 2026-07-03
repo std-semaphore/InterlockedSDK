@@ -1152,8 +1152,6 @@ func computeSimTimes(profile *rawTimingProfile, entryKey string, pts []resolvedP
 		t += travel
 	}
 
-	var prevLoc *resolvedPoint
-
 	for i := range pts {
 		p := &pts[i]
 
@@ -1209,8 +1207,6 @@ func computeSimTimes(profile *rawTimingProfile, entryKey string, pts []resolvedP
 				t += travel
 			}
 		}
-
-		prevLoc = p
 	}
 
 	return calls, t, nil
