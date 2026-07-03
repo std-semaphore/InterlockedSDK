@@ -119,12 +119,12 @@ type Timetable struct {
 	Versions  []VersionEntry `json:"versions"`
 }
 
-func (c *apiClient) UploadTimetable(zipData []byte, authorID string, privKey ed25519.PrivateKey) error {
-	req, err := c.signedRequest("POST", registryURL+"/timetables", bytes.NewReader(zipData), authorID, privKey)
+func (c *apiClient) UploadTimetable(archiveData []byte, authorID string, privKey ed25519.PrivateKey) error {
+	req, err := c.signedRequest("POST", registryURL+"/timetables", bytes.NewReader(archiveData), authorID, privKey)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/zip")
+	req.Header.Set("Content-Type", "application/gzip")
 	req.Header.Set("X-Author-ID", authorID)
 	resp, err := c.http.Do(req)
 	if err != nil {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"image/color"
 	"os"
@@ -97,7 +98,7 @@ func compileCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "compile [path]",
-		Short: "Build a signed ZIP without uploading",
+		Short: "Build a signed timetable archive without uploading",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
@@ -131,27 +132,24 @@ func compileCmd() *cobra.Command {
 
 			fmt.Printf("Compiling %s@%s ...\n", manifest.Manifest.ID, manifest.Manifest.Version)
 
-			zipData, counts, err := compile(dir, privKey)
+			archiveData, counts, err := compile(dir, privKey)
 			if err != nil {
 				return err
 			}
 
-			total := 1
-			fmt.Println("  manifest.toml")
-			for _, folder := range signedFolders {
-				n := counts[folder]
-				if n > 0 {
-					fmt.Printf("  %s/  (%d file%s)\n", folder, n, plural(n))
-					total += n
+			fmt.Println("  timetable.json")
+			for _, section := range []string{"tiplocs", "paths", "consists", "stations", "diagrams"} {
+				if n := counts[section]; n > 0 {
+					fmt.Printf("    %-10s%d\n", section+":", n)
 				}
 			}
 			fmt.Printf("  signature.bin\n")
-			fmt.Printf("\n  %d file%s signed, %.1f KB\n", total, plural(total), float64(len(zipData))/1024)
+			fmt.Printf("\n  %.1f KB signed and packaged\n", float64(len(archiveData))/1024)
 
 			if out == "" {
-				out = fmt.Sprintf("%s-%s.zip", manifest.Manifest.ID, manifest.Manifest.Version)
+				out = fmt.Sprintf("%s-%s.tar.gz", manifest.Manifest.ID, manifest.Manifest.Version)
 			}
-			if err := os.WriteFile(out, zipData, 0644); err != nil {
+			if err := os.WriteFile(out, archiveData, 0644); err != nil {
 				return fmt.Errorf("write %s: %w", out, err)
 			}
 
@@ -161,7 +159,7 @@ func compileCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&dir, "dir", "d", "", "Timetable directory (default: current directory)")
-	cmd.Flags().StringVarP(&out, "out", "o", "", "Output ZIP path (default: <id>-<version>.zip)")
+	cmd.Flags().StringVarP(&out, "out", "o", "", "Output archive path (default: <id>-<version>.tar.gz)")
 	return cmd
 }
 
@@ -204,18 +202,18 @@ func publishCmd() *cobra.Command {
 
 			fmt.Printf("Publishing %s@%s ...\n", manifest.Manifest.ID, manifest.Manifest.Version)
 
-			zipData, _, err := compile(dir, privKey)
+			archiveData, _, err := compile(dir, privKey)
 			if err != nil {
 				return err
 			}
 
 			client := newClient()
-			if err := client.UploadTimetable(zipData, creds.AuthorID, privKey); err != nil {
+			if err := client.UploadTimetable(archiveData, creds.AuthorID, privKey); err != nil {
 				return err
 			}
 
 			fmt.Printf("✓ Published %s@%s (%.1f KB)\n",
-				manifest.Manifest.ID, manifest.Manifest.Version, float64(len(zipData))/1024)
+				manifest.Manifest.ID, manifest.Manifest.Version, float64(len(archiveData))/1024)
 			return nil
 		},
 	}
@@ -437,31 +435,37 @@ func userCmd() *cobra.Command {
 
 func verifyCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "verify <zip>",
-		Short: "Verify a timetable ZIP's signature against the registry",
+		Use:   "verify <archive>",
+		Short: "Verify a timetable archive's signature against the registry",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			zipPath := args[0]
+			archivePath := args[0]
 
-			zipData, err := os.ReadFile(zipPath)
+			archiveData, err := os.ReadFile(archivePath)
 			if err != nil {
-				return fmt.Errorf("read %s: %w", zipPath, err)
+				return fmt.Errorf("read %s: %w", archivePath, err)
 			}
 
-			zr, err := openZip(zipData)
+			tgz, err := openTarGz(archiveData)
 			if err != nil {
-				return fmt.Errorf("invalid zip: %w", err)
+				return fmt.Errorf("invalid archive: %w", err)
 			}
 
-			manifestData, err := readZipEntry(zr, "manifest.toml")
+			jsonData, err := readTarEntry(tgz, "timetable.json")
 			if err != nil {
-				return fmt.Errorf("missing manifest.toml in zip: %w", err)
+				return fmt.Errorf("missing timetable.json in archive: %w", err)
 			}
 
-			var m Manifest
-			if err := tomlUnmarshal(manifestData, &m); err != nil {
-				return fmt.Errorf("parse manifest.toml: %w", err)
+			var doc struct {
+				Manifest *Manifest `json:"manifest"`
 			}
+			if err := json.Unmarshal(jsonData, &doc); err != nil {
+				return fmt.Errorf("parse timetable.json: %w", err)
+			}
+			if doc.Manifest == nil {
+				return fmt.Errorf("timetable.json has no manifest section")
+			}
+			m := doc.Manifest
 
 			authorID := m.Manifest.Author
 			fmt.Printf("Claimed author:  %s\n", authorID)
@@ -479,15 +483,15 @@ func verifyCmd() *cobra.Command {
 				return fmt.Errorf("registry returned empty public key for %q — server may not expose public keys", authorID)
 			}
 
-			hash, err := computeHashFromZip(zr)
+			hash, err := computeHashFromTarGz(tgz)
 			if err != nil {
 				return fmt.Errorf("compute hash: %w", err)
 			}
 
-			if err := verifySignature(zr, author.PublicKey, hash); err != nil {
+			if err := verifySignature(tgz, author.PublicKey, hash); err != nil {
 				fmt.Println("✗ Signature INVALID")
 				fmt.Printf("  %v\n", err)
-				fmt.Println("\nThis ZIP may have been tampered with or was not signed by the claimed author.")
+				fmt.Println("\nThis archive may have been tampered with or was not signed by the claimed author.")
 				os.Exit(1)
 			}
 
@@ -544,7 +548,7 @@ func downloadCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "download <id> <version>",
-		Short: "Download a timetable ZIP from the registry",
+		Short: "Download a timetable archive from the registry",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, version := args[0], args[1]
@@ -557,7 +561,7 @@ func downloadCmd() *cobra.Command {
 			}
 
 			if outFile == "" {
-				outFile = fmt.Sprintf("%s-%s.zip", id, version)
+				outFile = fmt.Sprintf("%s-%s.tar.gz", id, version)
 			}
 			if err := os.WriteFile(outFile, data, 0644); err != nil {
 				return fmt.Errorf("write %s: %w", outFile, err)
@@ -637,13 +641,6 @@ func confirm(prompt string) bool {
 	r := bufio.NewReader(os.Stdin)
 	line, _ := r.ReadString('\n')
 	return strings.TrimSpace(strings.ToLower(line)) == "y"
-}
-
-func plural(n int) string {
-	if n == 1 {
-		return ""
-	}
-	return "s"
 }
 
 func init() {

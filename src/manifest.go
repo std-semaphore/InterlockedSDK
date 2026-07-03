@@ -1,23 +1,22 @@
 package main
 
 import (
-	"archive/zip"
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/BurntSushi/toml"
 	"github.com/Masterminds/semver/v3"
 )
-
-var signedFolders = []string{"Consists", "Diagrams", "Paths", "Static", "Templates", "TIPLOCs", "TimingProfiles"}
 
 type Manifest struct {
 	Manifest ManifestMeta   `toml:"manifest"`
@@ -73,118 +72,143 @@ func loadManifest(dir string) (*Manifest, error) {
 	return &m, nil
 }
 
-func isSignedPath(name string) bool {
-	if name == "manifest.toml" {
-		return true
-	}
-	// Match any depth under a signed top-level folder, e.g.
-	// "Static/Connections.toml" as well as
-	// "Static/Definitions/AAS.toml" or "Static/StaticTemplates/Foo.toml".
-	parts := strings.SplitN(name, "/", 2)
-	if len(parts) != 2 {
-		return false
-	}
-	if filepath.Ext(parts[1]) != ".toml" {
-		return false
-	}
-	for _, f := range signedFolders {
-		if parts[0] == f {
-			return true
-		}
-	}
-	return false
+// computeHash returns the sha256 hash of the raw bytes that get signed —
+// the serialized timetable.json itself, rather than a manifest over many
+// individually-signed TOML files.
+func computeHash(jsonData []byte) []byte {
+	h := sha256.Sum256(jsonData)
+	return h[:]
 }
 
-func computeHash(files map[string][]byte) []byte {
-	type entry struct{ path, hash string }
-	var entries []entry
-	for name, data := range files {
-		if !isSignedPath(name) {
-			continue
-		}
-		h := sha256.Sum256(data)
-		entries = append(entries, entry{name, fmt.Sprintf("%x", h)})
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].path < entries[j].path })
-
-	var sb strings.Builder
-	for _, e := range entries {
-		sb.WriteString(e.path + ":" + e.hash + "\n")
-	}
-	final := sha256.Sum256([]byte(sb.String()))
-	return final[:]
-}
-
+// compile converts the timetable directory into a single JSON document
+// (via buildOutput, see convert.go), signs a hash of that JSON, and
+// packages both as a gzip-compressed tar archive:
+//
+//	timetable.json
+//	signature.bin
+//
+// The returned counts map reports sizes of a few top-level sections of
+// the JSON document, for progress-printing purposes only.
 func compile(dir string, privKey ed25519.PrivateKey) ([]byte, map[string]int, error) {
-	files := make(map[string][]byte)
-	folderCounts := make(map[string]int)
-
-	manifestData, err := os.ReadFile(filepath.Join(dir, "manifest.toml"))
+	doc, err := buildOutput(dir, "")
 	if err != nil {
-		return nil, nil, fmt.Errorf("read manifest.toml: %w", err)
-	}
-	files["manifest.toml"] = manifestData
-
-	for _, folder := range signedFolders {
-		root := filepath.Join(dir, folder)
-		info, err := os.Stat(root)
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return nil, nil, fmt.Errorf("read %s/: %w", folder, err)
-		}
-		if !info.IsDir() {
-			continue
-		}
-
-		err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if d.IsDir() || filepath.Ext(d.Name()) != ".toml" {
-				return nil
-			}
-
-			rel, err := filepath.Rel(dir, path)
-			if err != nil {
-				return err
-			}
-			relPath := filepath.ToSlash(rel)
-
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return fmt.Errorf("read %s: %w", relPath, err)
-			}
-			files[relPath] = data
-			folderCounts[folder]++
-			return nil
-		})
-		if err != nil {
-			return nil, nil, err
-		}
+		return nil, nil, err
 	}
 
-	hash := computeHash(files)
+	jsonData, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal timetable.json: %w", err)
+	}
+
+	hash := computeHash(jsonData)
 	sig := ed25519.Sign(privKey, hash)
 
-	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf)
-	for name, data := range files {
-		w, err := zw.Create(name)
-		if err != nil {
-			return nil, nil, err
-		}
-		io.Copy(w, bytes.NewReader(data))
+	counts := map[string]int{
+		"tiplocs":  len(doc.Tiplocs),
+		"paths":    len(doc.Paths),
+		"consists": len(doc.Consists),
+		"stations": len(doc.Stations),
+		"diagrams": len(doc.Diagrams),
 	}
-	sigW, _ := zw.Create("signature.bin")
-	sigW.Write(sig)
-	zw.Close()
 
-	return buf.Bytes(), folderCounts, nil
+	archive, err := buildTarGz(jsonData, sig)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return archive, counts, nil
 }
 
-func verifySignature(zr *zip.Reader, pubKeyB64 string, hash []byte) error {
+func buildTarGz(jsonData, sig []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+
+	files := []struct {
+		name string
+		data []byte
+	}{
+		{"timetable.json", jsonData},
+		{"signature.bin", sig},
+	}
+
+	for _, f := range files {
+		hdr := &tar.Header{
+			Name: f.name,
+			Mode: 0o644,
+			Size: int64(len(f.data)),
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return nil, fmt.Errorf("write tar header for %s: %w", f.name, err)
+		}
+		if _, err := tw.Write(f.data); err != nil {
+			return nil, fmt.Errorf("write tar data for %s: %w", f.name, err)
+		}
+	}
+
+	if err := tw.Close(); err != nil {
+		return nil, fmt.Errorf("close tar writer: %w", err)
+	}
+	if err := gw.Close(); err != nil {
+		return nil, fmt.Errorf("close gzip writer: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// TarGzReader holds the decoded contents of a timetable .tar.gz archive,
+// keyed by entry name (e.g. "timetable.json", "signature.bin").
+type TarGzReader struct {
+	Files map[string][]byte
+}
+
+func openTarGz(data []byte) (*TarGzReader, error) {
+	gr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("not a gzip stream: %w", err)
+	}
+	defer gr.Close()
+
+	tr := tar.NewReader(gr)
+	files := map[string][]byte{}
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read tar entry: %w", err)
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+		buf, err := io.ReadAll(tr)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", hdr.Name, err)
+		}
+		files[filepath.ToSlash(hdr.Name)] = buf
+	}
+	return &TarGzReader{Files: files}, nil
+}
+
+func readTarEntry(tgz *TarGzReader, name string) ([]byte, error) {
+	data, ok := tgz.Files[name]
+	if !ok {
+		return nil, fmt.Errorf("file not found: %s", name)
+	}
+	return data, nil
+}
+
+// computeHashFromTarGz extracts timetable.json from the archive and
+// returns its sha256 hash — the same hash that was signed at compile time.
+func computeHashFromTarGz(tgz *TarGzReader) ([]byte, error) {
+	jsonData, err := readTarEntry(tgz, "timetable.json")
+	if err != nil {
+		return nil, err
+	}
+	return computeHash(jsonData), nil
+}
+
+func verifySignature(tgz *TarGzReader, pubKeyB64 string, hash []byte) error {
 	pubKeyBytes, err := base64.StdEncoding.DecodeString(pubKeyB64)
 	if err != nil {
 		return fmt.Errorf("decode public key: %w", err)
@@ -192,7 +216,7 @@ func verifySignature(zr *zip.Reader, pubKeyB64 string, hash []byte) error {
 	if len(pubKeyBytes) != ed25519.PublicKeySize {
 		return fmt.Errorf("invalid public key length %d", len(pubKeyBytes))
 	}
-	sig, err := readZipEntry(zr, "signature.bin")
+	sig, err := readTarEntry(tgz, "signature.bin")
 	if err != nil {
 		return fmt.Errorf("signature.bin missing: %w", err)
 	}
@@ -200,48 +224,6 @@ func verifySignature(zr *zip.Reader, pubKeyB64 string, hash []byte) error {
 		return fmt.Errorf("signature does not match")
 	}
 	return nil
-}
-
-func computeHashFromZip(zr *zip.Reader) ([]byte, error) {
-	files := make(map[string][]byte)
-	for _, f := range zr.File {
-		if f.FileInfo().IsDir() {
-			continue
-		}
-		name := filepath.ToSlash(f.Name)
-		if !isSignedPath(name) {
-			continue
-		}
-		rc, err := f.Open()
-		if err != nil {
-			return nil, fmt.Errorf("open %s: %w", name, err)
-		}
-		data, err := io.ReadAll(rc)
-		rc.Close()
-		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", name, err)
-		}
-		files[name] = data
-	}
-	return computeHash(files), nil
-}
-
-func openZip(data []byte) (*zip.Reader, error) {
-	return zip.NewReader(bytes.NewReader(data), int64(len(data)))
-}
-
-func readZipEntry(zr *zip.Reader, name string) ([]byte, error) {
-	for _, f := range zr.File {
-		if f.Name == name {
-			rc, err := f.Open()
-			if err != nil {
-				return nil, err
-			}
-			defer rc.Close()
-			return io.ReadAll(rc)
-		}
-	}
-	return nil, fmt.Errorf("file not found: %s", name)
 }
 
 func tomlUnmarshal(data []byte, v interface{}) error {
