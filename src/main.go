@@ -31,6 +31,7 @@ func main() {
 		listCmd(),
 		downloadCmd(),
 		mapCmd(),
+		convertCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
