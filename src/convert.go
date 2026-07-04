@@ -1588,6 +1588,7 @@ func convertService(diagID string, svc rawService, allUnits []string, ld loadedD
 	var after []staticCall
 
 	staticRef := effectiveStatic(&svc, tmpl)
+	var beforeList []staticEntry
 	var afterList []staticEntry
 
 	if staticRef != nil {
@@ -1596,11 +1597,12 @@ func convertService(diagID string, svc rawService, allUnits []string, ld loadedD
 			return ServiceOut{}, fmt.Errorf("static template %q not found", staticRef.Template)
 		}
 
-		beforeList := st.Before
-		afterList := st.After
+		beforeList = slices.Clone(st.Before)
+		afterList = slices.Clone(st.After)
+
 		if staticRef.Reversed {
-			reversedAfter := reverseStaticList(afterList)
 			reversedBefore := reverseStaticList(beforeList)
+			reversedAfter := reverseStaticList(afterList)
 			beforeList = reversedAfter
 			afterList = reversedBefore
 		}
