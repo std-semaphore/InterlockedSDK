@@ -1589,6 +1589,7 @@ func convertService(diagID string, svc rawService, allUnits []string, ld loadedD
 
 	staticRef := effectiveStatic(&svc, tmpl)
 	var afterList []staticEntry
+
 	if staticRef != nil {
 		st, ok := ld.staticTemplates[staticRef.Template]
 		if !ok {
@@ -1596,29 +1597,12 @@ func convertService(diagID string, svc rawService, allUnits []string, ld loadedD
 		}
 
 		beforeList := st.Before
-		afterList = st.After
+		afterList := st.After
 		if staticRef.Reversed {
-			combined := append([]staticEntry{}, beforeList...)
-			combined = append(combined, afterList...)
-
-			reversed := reverseStaticList(combined)
-
-			beforeLen := len(beforeList)
-			afterLen := len(afterList)
-
-			if beforeLen > len(reversed) {
-				beforeLen = len(reversed)
-			}
-			if afterLen > len(reversed) {
-				afterLen = len(reversed)
-			}
-
-			if beforeLen+afterLen != len(reversed) {
-				beforeLen = len(reversed) - afterLen
-			}
-
-			beforeList = reversed[:beforeLen]
-			afterList = reversed[beforeLen:]
+			reversedAfter := reverseStaticList(afterList)
+			reversedBefore := reverseStaticList(beforeList)
+			beforeList = reversedAfter
+			afterList = reversedBefore
 		}
 
 		beforeList = applyStaticExceptions(beforeList, staticRef.Exception)
