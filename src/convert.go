@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -700,160 +701,6 @@ func readTOMLFiles(dir string) (map[string][]byte, error) {
 	return out, nil
 }
 
-func loadDiagrams(dir string) (map[string]*rawDiagram, error) {
-	files, err := readTOMLFiles(filepath.Join(dir, "Diagrams"))
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]*rawDiagram{}
-	for id, data := range files {
-		var multi struct {
-			Diagram []rawDiagram `toml:"diagram"`
-		}
-		if err := toml.Unmarshal(data, &multi); err == nil && len(multi.Diagram) > 0 {
-			if len(multi.Diagram) == 1 {
-				out[id] = &multi.Diagram[0]
-			} else {
-				for i := range multi.Diagram {
-					subid := id
-					if i > 0 {
-						subid = fmt.Sprintf("%s#%d", id, i)
-					}
-					out[subid] = &multi.Diagram[i]
-				}
-			}
-			continue
-		}
-
-		var single rawDiagram
-		if err := toml.Unmarshal(data, &single); err == nil {
-			if len(single.Service) > 0 || single.Scenario != nil ||
-				len(single.Diagram.Allocation) > 0 || len(single.Diagram.SetSwapPool) > 0 {
-				out[id] = &single
-				continue
-			}
-		}
-
-		var wrap struct {
-			Diagram rawDiagram `toml:"diagram"`
-		}
-		if err := toml.Unmarshal(data, &wrap); err == nil {
-			out[id] = &wrap.Diagram
-			continue
-		}
-
-		return nil, fmt.Errorf("parse Diagrams/%s.toml: could not decode diagram file", id)
-	}
-	return out, nil
-}
-
-func loadTemplates(dir string) (map[string]*rawTemplate, error) {
-	files, err := readTOMLFiles(filepath.Join(dir, "Templates"))
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]*rawTemplate{}
-	for id, data := range files {
-		var t rawTemplate
-		if err := toml.Unmarshal(data, &t); err != nil {
-			return nil, fmt.Errorf("parse Templates/%s.toml: %w", id, err)
-		}
-		out[id] = &t
-	}
-	return out, nil
-}
-
-func loadConsists(dir string) (map[string]*rawConsist, error) {
-	files, err := readTOMLFiles(filepath.Join(dir, "Consists"))
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]*rawConsist{}
-	for id, data := range files {
-		var c rawConsist
-		if err := toml.Unmarshal(data, &c); err != nil {
-			return nil, fmt.Errorf("parse Consists/%s.toml: %w", id, err)
-		}
-		out[id] = &c
-	}
-	return out, nil
-}
-
-func loadTimingProfiles(dir string) (map[string]*rawTimingProfile, error) {
-	files, err := readTOMLFiles(filepath.Join(dir, "TimingProfiles"))
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]*rawTimingProfile{}
-	for id, data := range files {
-		var p rawTimingProfile
-		if err := toml.Unmarshal(data, &p); err != nil {
-			return nil, fmt.Errorf("parse TimingProfiles/%s.toml: %w", id, err)
-		}
-		out[id] = &p
-	}
-	return out, nil
-}
-
-func loadTiplocDefs(dir string) (map[string]rawTiplocFile, error) {
-	files, err := readTOMLFiles(filepath.Join(dir, "TIPLOCs"))
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]rawTiplocFile{}
-	for id, data := range files {
-		var t rawTiplocFile
-		if err := toml.Unmarshal(data, &t); err != nil {
-			return nil, fmt.Errorf("parse TIPLOCs/%s.toml: %w", id, err)
-		}
-		out[id] = t
-	}
-	return out, nil
-}
-
-func loadStationDefs(dir string) (map[string]rawStationDef, error) {
-	files, err := readTOMLFiles(filepath.Join(dir, "Static", "Definitions"))
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]rawStationDef{}
-	for crs, data := range files {
-		var s rawStationDef
-		if err := toml.Unmarshal(data, &s); err != nil {
-			return nil, fmt.Errorf("parse Static/Definitions/%s.toml: %w", crs, err)
-		}
-		out[crs] = s
-	}
-	return out, nil
-}
-
-func loadPaths(dir string) ([]PathOut, error) {
-	files, err := readTOMLFiles(filepath.Join(dir, "Paths"))
-	if err != nil {
-		return nil, err
-	}
-	var ids []string
-	for id := range files {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-
-	var out []PathOut
-	for _, id := range ids {
-		var p rawPath
-		if err := toml.Unmarshal(files[id], &p); err != nil {
-			return nil, fmt.Errorf("parse Paths/%s.toml: %w", id, err)
-		}
-		fromSection, fromAt := splitSectionOffset(p.From)
-		toSection, toAt := splitSectionOffset(p.To)
-		out = append(out, PathOut{
-			ID: id, FromSection: fromSection, ToSection: toSection,
-			FromAt: fromAt, ToAt: toAt,
-		})
-	}
-	return out, nil
-}
-
 func splitSectionOffset(s string) (string, *int) {
 	if idx := strings.Index(s, ":"); idx >= 0 {
 		section := s[:idx]
@@ -863,85 +710,6 @@ func splitSectionOffset(s string) (string, *int) {
 		return section, nil
 	}
 	return s, nil
-}
-
-func loadConnections(dir string) (map[string][]string, map[string]float64, error) {
-	path := filepath.Join(dir, "Static", "Connections.toml")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return map[string][]string{}, map[string]float64{}, nil
-		}
-		return nil, nil, fmt.Errorf("read Static/Connections.toml: %w", err)
-	}
-	var raw rawConnectionsFile
-	if err := toml.Unmarshal(data, &raw); err != nil {
-		return nil, nil, fmt.Errorf("parse Static/Connections.toml: %w", err)
-	}
-	fringe := map[string]float64{}
-	for _, u := range raw.Unmodelled {
-		fringe[u.At] = u.Weight
-	}
-	if raw.Connections == nil {
-		raw.Connections = map[string][]string{}
-	}
-	return raw.Connections, fringe, nil
-}
-
-func loadStaticTemplates(dir string) (map[string]*staticTemplate, error) {
-	root := filepath.Join(dir, "Static", "StaticTemplates")
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return map[string]*staticTemplate{}, nil
-		}
-		return nil, err
-	}
-	out := map[string]*staticTemplate{}
-	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".toml" {
-			continue
-		}
-		id := strings.TrimSuffix(e.Name(), ".toml")
-		path := filepath.Join(root, e.Name())
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", e.Name(), err)
-		}
-
-		var raw rawStaticTemplate
-		md, err := toml.Decode(string(data), &raw)
-		if err != nil {
-			return nil, fmt.Errorf("parse Static/StaticTemplates/%s.toml: %w", id, err)
-		}
-
-		st := &staticTemplate{}
-		seenBefore := map[string]bool{}
-		seenAfter := map[string]bool{}
-		for _, k := range md.Keys() {
-			if len(k) < 2 {
-				continue
-			}
-			switch k[0] {
-			case "beforeSimulatedArea":
-				crs := k[1]
-				if !seenBefore[crs] {
-					seenBefore[crs] = true
-					v := raw.BeforeSimulatedArea[crs]
-					st.Before = append(st.Before, staticEntry{CRS: crs, TravelTime: v.TravelTime, Dwell: v.Dwell})
-				}
-			case "afterSimulatedArea":
-				crs := k[1]
-				if !seenAfter[crs] {
-					seenAfter[crs] = true
-					v := raw.AfterSimulatedArea[crs]
-					st.After = append(st.After, staticEntry{CRS: crs, TravelTime: v.TravelTime, Dwell: v.Dwell})
-				}
-			}
-		}
-		out[id] = st
-	}
-	return out, nil
 }
 
 func parseRelDuration(s string) (int, error) {
@@ -2148,6 +1916,273 @@ func buildDiagramOut(diagID string, ld loadedData) (DiagramOut, error) {
 	}
 
 	return out, nil
+}
+
+// readTOMLFilesRecursive walks a directory tree and loads all .toml files.
+// It uses just the clean filename (without subfolders) as the map key ID.
+func readTOMLFilesRecursive(baseDir string) (map[string][]byte, error) {
+	out := make(map[string][]byte)
+
+	err := filepath.WalkDir(baseDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() {
+			return nil
+		}
+
+		if strings.ToLower(filepath.Ext(path)) != ".toml" {
+			return nil
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+
+		// CHANGE: Get just the filename (e.g., "BranchKestby.toml") instead of the full relative path
+		filename := filepath.Base(path)
+
+		// Strip the ".toml" extension to get the standard ID (e.g., "BranchKestby")
+		id := strings.TrimSuffix(filename, filepath.Ext(filename))
+
+		out[id] = data
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ============================================================================
+// 2. Updated Directory Loader Functions
+// ============================================================================
+
+func loadDiagrams(dir string) (map[string]*rawDiagram, error) {
+	files, err := readTOMLFilesRecursive(filepath.Join(dir, "Diagrams"))
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]*rawDiagram{}
+	for id, data := range files {
+		var multi struct {
+			Diagram []rawDiagram `toml:"diagram"`
+		}
+		if err := toml.Unmarshal(data, &multi); err == nil && len(multi.Diagram) > 0 {
+			if len(multi.Diagram) == 1 {
+				out[id] = &multi.Diagram[0]
+			} else {
+				for i := range multi.Diagram {
+					subid := id
+					if i > 0 {
+						subid = fmt.Sprintf("%s#%d", id, i)
+					}
+					out[subid] = &multi.Diagram[i]
+				}
+			}
+			continue
+		}
+
+		var single rawDiagram
+		if err := toml.Unmarshal(data, &single); err == nil {
+			if len(single.Service) > 0 || single.Scenario != nil ||
+				len(single.Diagram.Allocation) > 0 || len(single.Diagram.SetSwapPool) > 0 {
+				out[id] = &single
+				continue
+			}
+		}
+
+		var wrap struct {
+			Diagram rawDiagram `toml:"diagram"`
+		}
+		if err := toml.Unmarshal(data, &wrap); err == nil {
+			out[id] = &wrap.Diagram
+			continue
+		}
+
+		return nil, fmt.Errorf("parse Diagrams/%s.toml: could not decode diagram file", id)
+	}
+	return out, nil
+}
+
+func loadTemplates(dir string) (map[string]*rawTemplate, error) {
+	files, err := readTOMLFilesRecursive(filepath.Join(dir, "Templates"))
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]*rawTemplate{}
+	for id, data := range files {
+		var t rawTemplate
+		if err := toml.Unmarshal(data, &t); err != nil {
+			return nil, fmt.Errorf("parse Templates/%s.toml: %w", id, err)
+		}
+		out[id] = &t
+	}
+	return out, nil
+}
+
+func loadConsists(dir string) (map[string]*rawConsist, error) {
+	files, err := readTOMLFilesRecursive(filepath.Join(dir, "Consists"))
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]*rawConsist{}
+	for id, data := range files {
+		var c rawConsist
+		if err := toml.Unmarshal(data, &c); err != nil {
+			return nil, fmt.Errorf("parse Consists/%s.toml: %w", id, err)
+		}
+		out[id] = &c
+	}
+	return out, nil
+}
+
+func loadTimingProfiles(dir string) (map[string]*rawTimingProfile, error) {
+	files, err := readTOMLFilesRecursive(filepath.Join(dir, "TimingProfiles"))
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]*rawTimingProfile{}
+	for id, data := range files {
+		var p rawTimingProfile
+		if err := toml.Unmarshal(data, &p); err != nil {
+			return nil, fmt.Errorf("parse TimingProfiles/%s.toml: %w", id, err)
+		}
+		out[id] = &p
+	}
+	return out, nil
+}
+
+func loadTiplocDefs(dir string) (map[string]rawTiplocFile, error) {
+	files, err := readTOMLFilesRecursive(filepath.Join(dir, "TIPLOCs"))
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]rawTiplocFile{}
+	for id, data := range files {
+		var t rawTiplocFile
+		if err := toml.Unmarshal(data, &t); err != nil {
+			return nil, fmt.Errorf("parse TIPLOCs/%s.toml: %w", id, err)
+		}
+		out[id] = t
+	}
+	return out, nil
+}
+
+func loadStationDefs(dir string) (map[string]rawStationDef, error) {
+	files, err := readTOMLFilesRecursive(filepath.Join(dir, "Static", "Definitions"))
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]rawStationDef{}
+	for crs, data := range files {
+		var s rawStationDef
+		if err := toml.Unmarshal(data, &s); err != nil {
+			return nil, fmt.Errorf("parse Static/Definitions/%s.toml: %w", crs, err)
+		}
+		out[crs] = s
+	}
+	return out, nil
+}
+
+func loadPaths(dir string) ([]PathOut, error) {
+	files, err := readTOMLFilesRecursive(filepath.Join(dir, "Paths"))
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for id := range files {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	var out []PathOut
+	for _, id := range ids {
+		var p rawPath
+		if err := toml.Unmarshal(files[id], &p); err != nil {
+			return nil, fmt.Errorf("parse Paths/%s.toml: %w", id, err)
+		}
+		fromSection, fromAt := splitSectionOffset(p.From)
+		toSection, toAt := splitSectionOffset(p.To)
+		out = append(out, PathOut{
+			ID: id, FromSection: fromSection, ToSection: toSection,
+			FromAt: fromAt, ToAt: toAt,
+		})
+	}
+	return out, nil
+}
+
+func loadStaticTemplates(dir string) (map[string]*staticTemplate, error) {
+	root := filepath.Join(dir, "Static", "StaticTemplates")
+	files, err := readTOMLFilesRecursive(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]*staticTemplate{}, nil
+		}
+		return nil, err
+	}
+
+	out := map[string]*staticTemplate{}
+	for id, data := range files {
+		var raw rawStaticTemplate
+		md, err := toml.Decode(string(data), &raw)
+		if err != nil {
+			return nil, fmt.Errorf("parse Static/StaticTemplates/%s.toml: %w", id, err)
+		}
+
+		st := &staticTemplate{}
+		seenBefore := map[string]bool{}
+		seenAfter := map[string]bool{}
+		for _, k := range md.Keys() {
+			if len(k) < 2 {
+				continue
+			}
+			switch k[0] {
+			case "beforeSimulatedArea":
+				crs := k[1]
+				if !seenBefore[crs] {
+					seenBefore[crs] = true
+					v := raw.BeforeSimulatedArea[crs]
+					st.Before = append(st.Before, staticEntry{CRS: crs, TravelTime: v.TravelTime, Dwell: v.Dwell})
+				}
+			case "afterSimulatedArea":
+				crs := k[1]
+				if !seenAfter[crs] {
+					seenAfter[crs] = true
+					v := raw.AfterSimulatedArea[crs]
+					st.After = append(st.After, staticEntry{CRS: crs, TravelTime: v.TravelTime, Dwell: v.Dwell})
+				}
+			}
+		}
+		out[id] = st
+	}
+	return out, nil
+}
+
+func loadConnections(dir string) (map[string][]string, map[string]float64, error) {
+	path := filepath.Join(dir, "Static", "Connections.toml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string][]string{}, map[string]float64{}, nil
+		}
+		return nil, nil, fmt.Errorf("read Static/Connections.toml: %w", err)
+	}
+	var raw rawConnectionsFile
+	if err := toml.Unmarshal(data, &raw); err != nil {
+		return nil, nil, fmt.Errorf("parse Static/Connections.toml: %w", err)
+	}
+	fringe := map[string]float64{}
+	for _, u := range raw.Unmodelled {
+		fringe[u.At] = u.Weight
+	}
+	if raw.Connections == nil {
+		raw.Connections = map[string][]string{}
+	}
+	return raw.Connections, fringe, nil
 }
 
 func convertService(diagID string, svc rawService, allUnits []string, allConsists []string, diagram *rawDiagram, ld loadedData) (ServiceOut, error) {
