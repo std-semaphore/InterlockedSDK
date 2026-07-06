@@ -153,35 +153,42 @@ type ActivityOut struct {
 }
 
 type TimetableEntryOut struct {
-	Type       string        `json:"type"`
-	CRS        string        `json:"crs,omitempty"`
-	Tiploc     string        `json:"tiploc,omitempty"`
-	Arr        string        `json:"arr,omitempty"`
-	Dep        string        `json:"dep,omitempty"`
-	Plat       string        `json:"plat,omitempty"`
-	Pass       bool          `json:"pass,omitempty"`
-	Path       string        `json:"path,omitempty"`
-	StopPct    *float64      `json:"stop_pct,omitempty"`
-	Activities []ActivityOut `json:"activities,omitempty"`
+	Type                string        `json:"type"`
+	CRS                 string        `json:"crs,omitempty"`
+	Tiploc              string        `json:"tiploc,omitempty"`
+	Arr                 string        `json:"arr,omitempty"`
+	Dep                 string        `json:"dep,omitempty"`
+	Plat                string        `json:"plat,omitempty"`
+	Pass                bool          `json:"pass,omitempty"`
+	Path                string        `json:"path,omitempty"`
+	StopPct             *float64      `json:"stop_pct,omitempty"`
+	AllowEarly          *bool         `json:"allow_early,omitempty"`
+	SignallerPermission bool          `json:"signaller_permission,omitempty"`
+	Activities          []ActivityOut `json:"activities,omitempty"`
 }
 
 type ServiceOut struct {
-	Headcode   string              `json:"headcode"`
-	Diagram    string              `json:"diagram"`
-	EntryTime  string              `json:"entry_time"`
-	TimingLoad string              `json:"timing_load,omitempty"`
-	Entry      EntryOut            `json:"entry"`
-	Exit       ExitOut             `json:"exit"`
-	Timetable  []TimetableEntryOut `json:"timetable"`
+	Headcode       string              `json:"headcode"`
+	Diagram        string              `json:"diagram"`
+	EntryTime      string              `json:"entry_time"`
+	TimingLoad     string              `json:"timing_load,omitempty"`
+	DoNotAdvertise bool                `json:"do_not_advertise,omitempty"`
+	AllowEarly     *bool               `json:"allow_early,omitempty"`
+	Scenario       *ScenarioOut        `json:"scenario,omitempty"`
+	Entry          EntryOut            `json:"entry"`
+	Exit           ExitOut             `json:"exit"`
+	Timetable      []TimetableEntryOut `json:"timetable"`
 }
 
 type DiagramOut struct {
-	ID          string          `json:"id"`
-	Operator    string          `json:"operator"`
-	Allocation  []AllocEntryOut `json:"allocation"`
-	SetSwapPool []AllocEntryOut `json:"set_swap_pool,omitempty"`
-	Scenario    *ScenarioOut    `json:"scenario,omitempty"`
-	Services    []ServiceOut    `json:"services"`
+	ID             string          `json:"id"`
+	Operator       string          `json:"operator"`
+	Allocation     []AllocEntryOut `json:"allocation"`
+	SetSwapPool    []AllocEntryOut `json:"set_swap_pool,omitempty"`
+	DoNotAdvertise bool            `json:"do_not_advertise,omitempty"`
+	AllowEarly     *bool           `json:"allow_early,omitempty"`
+	Scenario       *ScenarioOut    `json:"scenario,omitempty"`
+	Services       []ServiceOut    `json:"services"`
 }
 
 type rawManifest struct {
@@ -210,15 +217,19 @@ type rawScenario struct {
 
 type rawDiagram struct {
 	Diagram struct {
-		Operator    string            `toml:"operator"`
-		Allocation  []allocationEntry `toml:"allocation"`
-		SetSwapPool []allocationEntry `toml:"set_swap_pool"`
+		Operator       string            `toml:"operator"`
+		Allocation     []allocationEntry `toml:"allocation"`
+		SetSwapPool    []allocationEntry `toml:"set_swap_pool"`
+		DoNotAdvertise *bool             `toml:"do_not_advertise"`
+		AllowEarly     *bool             `toml:"allow_early"`
 	} `toml:"diagram"`
 	Scenario *rawScenario `toml:"scenario"`
 	Service  []rawService `toml:"service"`
 }
 
 type rawActivityConfig struct {
+	Tiploc        string   `toml:"tiploc"`
+	Occurrence    int      `toml:"occurrence"`
 	DetachUnit    *int     `toml:"detach_unit"`
 	Forms         string   `toml:"forms"`
 	DetachDiagram string   `toml:"detach_diagram"`
@@ -227,15 +238,29 @@ type rawActivityConfig struct {
 	AttachUnit    *int     `toml:"attach_unit"`
 }
 
+type rawServiceActivities struct {
+	Attach     []rawActivityConfig `toml:"attach"`
+	Detach     []rawActivityConfig `toml:"detach"`
+	Reverse    []rawActivityConfig `toml:"reverse"`
+	CrewChange []rawActivityConfig `toml:"crew_change"`
+}
+
 type rawService struct {
-	Headcode   string                       `toml:"headcode"`
-	Template   string                       `toml:"template"`
-	Departs    string                       `toml:"departs"`
-	Static     *rawStaticRef                `toml:"static"`
-	Timing     *rawServiceTiming            `toml:"timing"`
-	Exception  []rawSimException            `toml:"exception"`
-	Activity   map[string]rawActivityConfig `toml:"activity"`
-	Recurrence *rawRecurrence               `toml:"recurrence"`
+	Headcode       string               `toml:"headcode"`
+	Template       string               `toml:"template"`
+	Departs        string               `toml:"departs"`
+	Enters         string               `toml:"enters"`
+	Exits          string               `toml:"exits"`
+	TimingRef      string               `toml:"-"`
+	Occurrence     int                  `toml:"occurrence"`
+	Static         *rawStaticRef        `toml:"static"`
+	Timing         *rawServiceTiming    `toml:"-"`
+	Exception      []rawSimException    `toml:"exception"`
+	Activity       rawServiceActivities `toml:"activity"`
+	Recurrence     *rawRecurrence       `toml:"recurrence"`
+	TiplocTiming   map[string]string    `toml:"-"`
+	DoNotAdvertise *bool                `toml:"do_not_advertise"`
+	AllowEarly     *bool                `toml:"allow_early"`
 
 	BaseDelay      *float64 `toml:"base_delay"`
 	DelayedPct     *float64 `toml:"delayed_pct"`
@@ -246,6 +271,248 @@ type rawService struct {
 
 type rawServiceTiming struct {
 	Profile string `toml:"profile"`
+}
+
+func (s *rawService) UnmarshalTOML(data interface{}) error {
+	m, ok := data.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("service: expected table")
+	}
+
+	s.TiplocTiming = map[string]string{}
+	s.Headcode = stringValue(m["headcode"])
+	s.Template = stringValue(m["template"])
+	s.Departs = stringValue(m["departs"])
+	s.Enters = stringValue(m["enters"])
+	s.Exits = stringValue(m["exits"])
+	s.TimingRef = ""
+	s.Occurrence = intValue(m["occurrence"])
+	s.DoNotAdvertise = boolPtrValue(m["do_not_advertise"])
+	s.AllowEarly = boolPtrValue(m["allow_early"])
+	s.BaseDelay = floatPtrValue(m["base_delay"])
+	s.DelayedPct = floatPtrValue(m["delayed_pct"])
+	s.DisruptionPct = floatPtrValue(m["disruption_pct"])
+	s.SetSwapPct = floatPtrValue(m["set_swap_pct"])
+	s.RunsAsRequired = floatPtrValue(m["runs_as_required"])
+
+	if timing, ok := m["timing"]; ok {
+		switch v := timing.(type) {
+		case string:
+			s.TimingRef = v
+		case map[string]interface{}:
+			s.Timing = &rawServiceTiming{Profile: stringValue(v["profile"])}
+		}
+	}
+	if st, ok := m["static"].(map[string]interface{}); ok {
+		s.Static = parseStaticRef(st)
+	}
+	if rec, ok := m["recurrence"].(map[string]interface{}); ok {
+		s.Recurrence = &rawRecurrence{
+			Every:             stringValue(rec["every"]),
+			Until:             stringValue(rec["until"]),
+			HeadcodeIncrement: intValue(rec["headcode_increment"]),
+			HeadcodeList:      stringSliceValue(rec["headcode_list"]),
+		}
+	}
+	if exs, ok := m["exception"].([]map[string]interface{}); ok {
+		for _, ex := range exs {
+			s.Exception = append(s.Exception, parseSimException(ex))
+		}
+	} else if exs, ok := m["exception"].([]interface{}); ok {
+		for _, item := range exs {
+			if ex, ok := item.(map[string]interface{}); ok {
+				s.Exception = append(s.Exception, parseSimException(ex))
+			}
+		}
+	}
+	if act, ok := m["activity"].(map[string]interface{}); ok {
+		s.Activity = parseServiceActivities(act)
+	}
+
+	known := map[string]bool{
+		"headcode": true, "template": true, "departs": true, "enters": true, "exits": true,
+		"timing": true, "occurrence": true, "static": true, "exception": true, "activity": true,
+		"recurrence": true, "do_not_advertise": true, "allow_early": true,
+		"base_delay": true, "delayed_pct": true, "disruption_pct": true, "set_swap_pct": true,
+		"runs_as_required": true,
+	}
+	for k, v := range m {
+		if known[k] {
+			continue
+		}
+		if ref, ok := v.(string); ok {
+			s.TiplocTiming[k] = ref
+		}
+	}
+
+	return nil
+}
+
+func parseStaticRef(m map[string]interface{}) *rawStaticRef {
+	out := &rawStaticRef{
+		Template: stringValue(m["template"]),
+		Reversed: boolValue(m["reversed"]),
+	}
+	if exs, ok := m["exception"].([]map[string]interface{}); ok {
+		for _, ex := range exs {
+			out.Exception = append(out.Exception, parseStaticException(ex))
+		}
+	} else if exs, ok := m["exception"].([]interface{}); ok {
+		for _, item := range exs {
+			if ex, ok := item.(map[string]interface{}); ok {
+				out.Exception = append(out.Exception, parseStaticException(ex))
+			}
+		}
+	}
+	return out
+}
+
+func parseStaticException(m map[string]interface{}) rawStaticException {
+	return rawStaticException{
+		CRS:        stringValue(m["crs"]),
+		Exclude:    boolValue(m["exclude"]),
+		TravelTime: stringValue(m["travel_time"]),
+		Dwell:      stringValue(m["dwell"]),
+		Occurrence: intValue(m["occurrence"]),
+	}
+}
+
+func parseSimException(m map[string]interface{}) rawSimException {
+	return rawSimException{
+		Tiploc:              stringValue(m["tiploc"]),
+		Occurrence:          intValue(m["occurrence"]),
+		TravelTime:          stringValue(m["travel_time"]),
+		Allowance:           stringValue(m["allowance"]),
+		Dwell:               stringValue(m["dwell"]),
+		Pass:                boolPtrValue(m["pass"]),
+		StopPct:             floatPtrValue(m["stop_pct"]),
+		Plat:                m["plat"],
+		Path:                stringValue(m["path"]),
+		AllowEarly:          boolPtrValue(m["allow_early"]),
+		SignallerPermission: boolPtrValue(m["signaller_permission"]),
+	}
+}
+
+func parseServiceActivities(m map[string]interface{}) rawServiceActivities {
+	return rawServiceActivities{
+		Attach:     parseActivityList(m["attach"]),
+		Detach:     parseActivityList(m["detach"]),
+		Reverse:    parseActivityList(m["reverse"]),
+		CrewChange: parseActivityList(m["crew_change"]),
+	}
+}
+
+func parseActivityList(v interface{}) []rawActivityConfig {
+	var out []rawActivityConfig
+	switch items := v.(type) {
+	case []map[string]interface{}:
+		for _, item := range items {
+			out = append(out, parseActivityConfig(item))
+		}
+	case []interface{}:
+		for _, item := range items {
+			if m, ok := item.(map[string]interface{}); ok {
+				out = append(out, parseActivityConfig(m))
+			}
+		}
+	case map[string]interface{}:
+		out = append(out, parseActivityConfig(items))
+	}
+	return out
+}
+
+func parseActivityConfig(m map[string]interface{}) rawActivityConfig {
+	return rawActivityConfig{
+		Tiploc:        stringValue(m["tiploc"]),
+		Occurrence:    intValue(m["occurrence"]),
+		DetachUnit:    intPtrValue(m["detach_unit"]),
+		Forms:         stringValue(m["forms"]),
+		DetachDiagram: stringValue(m["detach_diagram"]),
+		Consists:      stringSliceValue(m["consists"]),
+		Joins:         stringValue(m["joins"]),
+		AttachUnit:    intPtrValue(m["attach_unit"]),
+	}
+}
+
+func stringValue(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func boolValue(v interface{}) bool {
+	if b, ok := v.(bool); ok {
+		return b
+	}
+	return false
+}
+
+func boolPtrValue(v interface{}) *bool {
+	if b, ok := v.(bool); ok {
+		return &b
+	}
+	return nil
+}
+
+func intValue(v interface{}) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	default:
+		return 0
+	}
+}
+
+func intPtrValue(v interface{}) *int {
+	switch n := v.(type) {
+	case int:
+		return &n
+	case int64:
+		x := int(n)
+		return &x
+	case float64:
+		x := int(n)
+		return &x
+	default:
+		return nil
+	}
+}
+
+func floatPtrValue(v interface{}) *float64 {
+	switch n := v.(type) {
+	case float64:
+		return &n
+	case int:
+		x := float64(n)
+		return &x
+	case int64:
+		x := float64(n)
+		return &x
+	default:
+		return nil
+	}
+}
+
+func stringSliceValue(v interface{}) []string {
+	switch items := v.(type) {
+	case []string:
+		return items
+	case []interface{}:
+		out := make([]string, 0, len(items))
+		for _, item := range items {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 type rawStaticRef struct {
@@ -263,14 +530,17 @@ type rawStaticException struct {
 }
 
 type rawSimException struct {
-	Tiploc     string      `toml:"tiploc"`
-	Occurrence int         `toml:"occurrence"`
-	TravelTime string      `toml:"travel_time"`
-	Dwell      string      `toml:"dwell"`
-	Pass       *bool       `toml:"pass"`
-	StopPct    *float64    `toml:"stop_pct"`
-	Plat       interface{} `toml:"plat"`
-	Path       string      `toml:"path"`
+	Tiploc              string      `toml:"tiploc"`
+	Occurrence          int         `toml:"occurrence"`
+	TravelTime          string      `toml:"travel_time"`
+	Allowance           string      `toml:"allowance"`
+	Dwell               string      `toml:"dwell"`
+	Pass                *bool       `toml:"pass"`
+	StopPct             *float64    `toml:"stop_pct"`
+	Plat                interface{} `toml:"plat"`
+	Path                string      `toml:"path"`
+	AllowEarly          *bool       `toml:"allow_early"`
+	SignallerPermission *bool       `toml:"signaller_permission"`
 }
 
 type rawRecurrence struct {
@@ -283,7 +553,10 @@ type rawRecurrence struct {
 type rawTemplate struct {
 	Template struct {
 		Description        string `toml:"description"`
+		Operator           string `toml:"operator"`
 		ForceTimingProfile string `toml:"force_timing_profile"`
+		DoNotAdvertise     *bool  `toml:"do_not_advertise"`
+		AllowEarly         *bool  `toml:"allow_early"`
 	} `toml:"template"`
 	Static     *rawStaticRef `toml:"static"`
 	Simulation rawSimulation `toml:"simulation"`
@@ -308,14 +581,17 @@ type rawEnters struct {
 }
 
 type rawPoint struct {
-	Tiploc     string        `toml:"tiploc"`
-	TravelTime string        `toml:"travel_time"`
-	Dwell      string        `toml:"dwell"`
-	Pass       bool          `toml:"pass"`
-	StopPct    float64       `toml:"stop_pct"`
-	Plat       interface{}   `toml:"plat"`
-	Path       string        `toml:"path"`
-	Activities []interface{} `toml:"activities"`
+	Tiploc              string        `toml:"tiploc"`
+	TravelTime          string        `toml:"travel_time"`
+	Allowance           string        `toml:"allowance"`
+	Dwell               string        `toml:"dwell"`
+	Pass                bool          `toml:"pass"`
+	StopPct             float64       `toml:"stop_pct"`
+	Plat                interface{}   `toml:"plat"`
+	Path                string        `toml:"path"`
+	Activities          []interface{} `toml:"activities"`
+	AllowEarly          *bool         `toml:"allow_early"`
+	SignallerPermission bool          `toml:"signaller_permission"`
 }
 
 type rawConsist struct {
@@ -698,6 +974,20 @@ func parseRelDuration(s string) (int, error) {
 
 func parseClockHHMM(s string) (int, error) {
 	s = strings.TrimSpace(s)
+	suffix := 0
+	if len(s) > 0 {
+		switch s[len(s)-1] {
+		case 'Q', 'q':
+			suffix = 15
+			s = s[:len(s)-1]
+		case 'H', 'h':
+			suffix = 30
+			s = s[:len(s)-1]
+		case 'T', 't':
+			suffix = 45
+			s = s[:len(s)-1]
+		}
+	}
 	if len(s) != 4 {
 		return 0, fmt.Errorf("invalid time %q, expected HHMM", s)
 	}
@@ -709,7 +999,7 @@ func parseClockHHMM(s string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("invalid time %q", s)
 	}
-	return hh*3600 + mm*60, nil
+	return hh*3600 + mm*60 + suffix, nil
 }
 
 func formatHHMM(secs int) string {
@@ -755,7 +1045,11 @@ func expandServices(svc rawService) ([]rawService, error) {
 		return []rawService{svc}, nil
 	}
 
-	start, err := parseClockHHMM(svc.Departs)
+	refName, refValue, err := recurrenceTimingValue(svc)
+	if err != nil {
+		return nil, err
+	}
+	start, err := parseClockHHMM(refValue)
 	if err != nil {
 		return nil, fmt.Errorf("service %s: %w", svc.Headcode, err)
 	}
@@ -773,7 +1067,7 @@ func expandServices(svc rawService) ([]rawService, error) {
 	for cur := start; cur <= until; cur += everyMin * 60 {
 		clone := svc
 		clone.Recurrence = nil
-		clone.Departs = formatHHMM(cur)
+		setRecurrenceTimingValue(&clone, refName, formatHHMM(cur))
 		if len(svc.Recurrence.HeadcodeList) > 0 {
 			if idx >= len(svc.Recurrence.HeadcodeList) {
 				return nil, fmt.Errorf("service %s: headcode_list is shorter than the generated services", svc.Headcode)
@@ -790,6 +1084,53 @@ func expandServices(svc rawService) ([]rawService, error) {
 			svc.Headcode, len(svc.Recurrence.HeadcodeList), idx)
 	}
 	return out, nil
+}
+
+func recurrenceTimingValue(svc rawService) (string, string, error) {
+	var refs []struct {
+		name  string
+		value string
+	}
+	add := func(name, value string) {
+		if value != "" {
+			refs = append(refs, struct {
+				name  string
+				value string
+			}{name: name, value: value})
+		}
+	}
+	add("departs", svc.Departs)
+	add("enters", svc.Enters)
+	add("exits", svc.Exits)
+	add("timing", svc.TimingRef)
+	for tiploc, value := range svc.TiplocTiming {
+		add(tiploc, value)
+	}
+	if len(refs) == 0 {
+		return "", "", fmt.Errorf("service %s: recurrence requires a timing reference", svc.Headcode)
+	}
+	if len(refs) > 1 {
+		return "", "", fmt.Errorf("service %s: recurrence has multiple timing references", svc.Headcode)
+	}
+	return refs[0].name, refs[0].value, nil
+}
+
+func setRecurrenceTimingValue(svc *rawService, name, value string) {
+	switch name {
+	case "departs":
+		svc.Departs = value
+	case "enters":
+		svc.Enters = value
+	case "exits":
+		svc.Exits = value
+	case "timing":
+		svc.TimingRef = value
+	default:
+		if svc.TiplocTiming == nil {
+			svc.TiplocTiming = map[string]string{}
+		}
+		svc.TiplocTiming[name] = value
+	}
 }
 
 func gatherDiagramUnits(id string, diagrams map[string]*rawDiagram, consists map[string]*rawConsist, seen map[string]bool, out map[string]bool) error {
@@ -818,6 +1159,33 @@ func gatherDiagramUnits(id string, diagrams map[string]*rawDiagram, consists map
 		for _, u := range c.Units {
 			out[u] = true
 		}
+	}
+	return nil
+}
+
+func gatherDiagramConsists(id string, diagrams map[string]*rawDiagram, consists map[string]*rawConsist, seen map[string]bool, out map[string]bool) error {
+	if seen[id] {
+		return nil
+	}
+	seen[id] = true
+
+	d, ok := diagrams[id]
+	if !ok {
+		return fmt.Errorf("diagram %q not found", id)
+	}
+
+	entries := append(append([]allocationEntry{}, d.Diagram.Allocation...), d.Diagram.SetSwapPool...)
+	for _, e := range entries {
+		if e.Diagram != "" {
+			if err := gatherDiagramConsists(e.Diagram, diagrams, consists, seen, out); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, ok := consists[e.Consist]; !ok {
+			return fmt.Errorf("consist %q not found (referenced by diagram %q)", e.Consist, id)
+		}
+		out[e.Consist] = true
 	}
 	return nil
 }
@@ -895,30 +1263,10 @@ func platToString(v interface{}) string {
 
 func parseActivities(raw []interface{}, svc rawService) []ActivityOut {
 	var out []ActivityOut
-	isAttachType := func(t string) bool {
-		return t == "attach" || t == "divide" || t == "detach"
-	}
 
 	for _, item := range raw {
 		switch v := item.(type) {
 		case string:
-			if isAttachType(v) {
-				if len(svc.Activity) == 1 {
-					for _, cfg := range svc.Activity {
-						a := ActivityOut{Type: v}
-						a.Forms = cfg.Forms
-						a.TargetDiagram = cfg.DetachDiagram
-						a.TargetUnit = cfg.DetachUnit
-						a.Consists = cfg.Consists
-						if cfg.Joins != "" {
-							a.TargetHeadcode = cfg.Joins
-						}
-						out = append(out, a)
-						break
-					}
-				}
-				continue
-			}
 			out = append(out, ActivityOut{Type: v})
 
 		case map[string]interface{}:
@@ -926,53 +1274,51 @@ func parseActivities(raw []interface{}, svc rawService) []ActivityOut {
 			if t, ok := v["type"].(string); ok {
 				a.Type = t
 			}
-			id, _ := v["id"].(string)
-
-			if isAttachType(a.Type) {
-				if id == "" {
-					if len(svc.Activity) == 1 {
-						for _, cfg := range svc.Activity {
-							a.Forms = cfg.Forms
-							a.TargetDiagram = cfg.DetachDiagram
-							a.TargetUnit = cfg.DetachUnit
-							a.Consists = cfg.Consists
-							if cfg.Joins != "" {
-								a.TargetHeadcode = cfg.Joins
-							}
-							out = append(out, a)
-							break
-						}
-					}
-					continue
-				}
-				if cfg, found := svc.Activity[id]; found {
-					a.Forms = cfg.Forms
-					a.TargetDiagram = cfg.DetachDiagram
-					a.TargetUnit = cfg.DetachUnit
-					a.Consists = cfg.Consists
-					if cfg.Joins != "" {
-						a.TargetHeadcode = cfg.Joins
-					}
-					out = append(out, a)
-				}
-				continue
-			}
-
-			if id != "" {
-				if cfg, found := svc.Activity[id]; found {
-					a.Forms = cfg.Forms
-					a.TargetDiagram = cfg.DetachDiagram
-					a.TargetUnit = cfg.DetachUnit
-					a.Consists = cfg.Consists
-					if cfg.Joins != "" {
-						a.TargetHeadcode = cfg.Joins
-					}
-				}
-			}
 			out = append(out, a)
 		}
 	}
 	return out
+}
+
+func applyServiceActivities(pts []resolvedPoint, activities rawServiceActivities) {
+	add := func(activityType string, cfgs []rawActivityConfig) {
+		for _, cfg := range cfgs {
+			occ := cfg.Occurrence
+			if occ == 0 {
+				occ = 1
+			}
+			for i := range pts {
+				if pts[i].Kind != PointLocation || pts[i].Tiploc != cfg.Tiploc || pts[i].Occurrence != occ {
+					continue
+				}
+				pts[i].Activities = append(pts[i].Activities, activityFromConfig(activityType, cfg))
+				break
+			}
+		}
+	}
+	add("attach", activities.Attach)
+	add("detach", activities.Detach)
+	add("reverse", activities.Reverse)
+	add("crew_change", activities.CrewChange)
+}
+
+func activityFromConfig(activityType string, cfg rawActivityConfig) ActivityOut {
+	a := ActivityOut{
+		Type:          activityType,
+		Forms:         cfg.Forms,
+		TargetDiagram: cfg.DetachDiagram,
+		Consists:      cfg.Consists,
+	}
+	if cfg.Joins != "" {
+		a.TargetHeadcode = cfg.Joins
+	}
+	if cfg.DetachUnit != nil {
+		a.TargetUnit = cfg.DetachUnit
+	}
+	if cfg.AttachUnit != nil {
+		a.TargetUnit = cfg.AttachUnit
+	}
+	return a
 }
 
 type resolvedPointKind uint8
@@ -985,18 +1331,21 @@ const (
 type resolvedPoint struct {
 	Kind resolvedPointKind
 
-	Tiploc             string
-	Occurrence         int
-	Pass               bool
-	Dwell              *int
-	TravelTimeOverride *int
-	Plat               string
-	Path               string
-	StopPct            *float64
-	Activities         []ActivityOut
+	Tiploc              string
+	Occurrence          int
+	Pass                bool
+	Dwell               *int
+	TravelTimeOverride  *int
+	Allowance           int
+	Plat                string
+	Path                string
+	StopPct             *float64
+	AllowEarly          *bool
+	SignallerPermission bool
+	Activities          []ActivityOut
 }
 
-func buildPoints(tmpl *rawTemplate, svc rawService) ([]resolvedPoint, error) {
+func buildPoints(tmpl *rawTemplate, svc rawService, activityDurations map[string]int) ([]resolvedPoint, error) {
 	rawPoints := slices.Clone(tmpl.Simulation.Point)
 
 	pts := make([]resolvedPoint, 0, len(rawPoints))
@@ -1012,12 +1361,14 @@ func buildPoints(tmpl *rawTemplate, svc rawService) ([]resolvedPoint, error) {
 		}
 
 		p := resolvedPoint{
-			Kind:       PointLocation,
-			Tiploc:     rp.Tiploc,
-			Pass:       rp.Pass,
-			Plat:       platToString(rp.Plat),
-			Path:       rp.Path,
-			Activities: parseActivities(rp.Activities, svc),
+			Kind:                PointLocation,
+			Tiploc:              rp.Tiploc,
+			Pass:                rp.Pass,
+			Plat:                platToString(rp.Plat),
+			Path:                rp.Path,
+			Activities:          parseActivities(rp.Activities, svc),
+			AllowEarly:          rp.AllowEarly,
+			SignallerPermission: rp.SignallerPermission,
 		}
 
 		occCount[rp.Tiploc]++
@@ -1044,8 +1395,18 @@ func buildPoints(tmpl *rawTemplate, svc rawService) ([]resolvedPoint, error) {
 			p.TravelTimeOverride = &t
 		}
 
+		if rp.Allowance != "" {
+			a, err := parseRelDuration(rp.Allowance)
+			if err != nil {
+				return nil, err
+			}
+			p.Allowance = a
+		}
+
 		pts = append(pts, p)
 	}
+
+	applyServiceActivities(pts, svc.Activity)
 
 	for _, ex := range svc.Exception {
 		occ := ex.Occurrence
@@ -1068,6 +1429,14 @@ func buildPoints(tmpl *rawTemplate, svc rawService) ([]resolvedPoint, error) {
 					return nil, err
 				}
 				pts[i].TravelTimeOverride = &t
+			}
+
+			if ex.Allowance != "" {
+				a, err := parseRelDuration(ex.Allowance)
+				if err != nil {
+					return nil, err
+				}
+				pts[i].Allowance = a
 			}
 
 			if ex.Dwell != "" {
@@ -1094,7 +1463,33 @@ func buildPoints(tmpl *rawTemplate, svc rawService) ([]resolvedPoint, error) {
 				pts[i].Path = ex.Path
 			}
 
+			if ex.AllowEarly != nil {
+				pts[i].AllowEarly = ex.AllowEarly
+			}
+
+			if ex.SignallerPermission != nil {
+				pts[i].SignallerPermission = *ex.SignallerPermission
+			}
+
 			break
+		}
+	}
+
+	for i := range pts {
+		if pts[i].Kind != PointLocation || pts[i].Pass {
+			continue
+		}
+		minDwell := 0
+		for _, a := range pts[i].Activities {
+			if d := activityDurations[a.Type]; d > minDwell {
+				minDwell = d
+			}
+		}
+		if minDwell == 0 {
+			continue
+		}
+		if pts[i].Dwell == nil || *pts[i].Dwell < minDwell {
+			pts[i].Dwell = &minDwell
 		}
 	}
 
@@ -1113,21 +1508,33 @@ type simCall struct {
 
 	Path string
 
-	Tiploc     string
-	Arr        *int
-	Dep        *int
-	Pass       bool
-	Plat       string
-	StopPct    *float64
-	Activities []ActivityOut
+	Tiploc              string
+	Occurrence          int
+	Arr                 *int
+	Dep                 *int
+	Pass                bool
+	Plat                string
+	StopPct             *float64
+	AllowEarly          *bool
+	SignallerPermission bool
+	Activities          []ActivityOut
 }
 
 func computeSimTimes(profile *rawTimingProfile, entryKey string, pts []resolvedPoint, departs int) ([]simCall, int, error) {
+	calls, exitOffset, err := computeSimOffsets(profile, entryKey, pts)
+	if err != nil {
+		return nil, 0, err
+	}
+	shiftSimCalls(calls, departs)
+	return calls, departs + exitOffset, nil
+}
+
+func computeSimOffsets(profile *rawTimingProfile, entryKey string, pts []resolvedPoint) ([]simCall, int, error) {
 	if len(pts) == 0 {
-		return nil, departs, nil
+		return nil, 0, nil
 	}
 
-	t := departs
+	t := 0
 	var calls []simCall
 
 	first := -1
@@ -1139,7 +1546,7 @@ func computeSimTimes(profile *rawTimingProfile, entryKey string, pts []resolvedP
 	}
 
 	if first == -1 {
-		return calls, departs, nil
+		return calls, 0, nil
 	}
 
 	if pts[first].TravelTimeOverride != nil {
@@ -1151,6 +1558,7 @@ func computeSimTimes(profile *rawTimingProfile, entryKey string, pts []resolvedP
 		}
 		t += travel
 	}
+	t += pts[first].Allowance
 
 	for i := range pts {
 		p := &pts[i]
@@ -1175,15 +1583,18 @@ func computeSimTimes(profile *rawTimingProfile, entryKey string, pts []resolvedP
 		}
 
 		calls = append(calls, simCall{
-			Kind:       SimulatedLocation,
-			Tiploc:     p.Tiploc,
-			Arr:        &arr,
-			Dep:        &dep,
-			Pass:       p.Pass,
-			Plat:       p.Plat,
-			Path:       p.Path,
-			StopPct:    p.StopPct,
-			Activities: p.Activities,
+			Kind:                SimulatedLocation,
+			Tiploc:              p.Tiploc,
+			Occurrence:          p.Occurrence,
+			Arr:                 &arr,
+			Dep:                 &dep,
+			Pass:                p.Pass,
+			Plat:                p.Plat,
+			Path:                p.Path,
+			StopPct:             p.StopPct,
+			AllowEarly:          p.AllowEarly,
+			SignallerPermission: p.SignallerPermission,
+			Activities:          p.Activities,
 		})
 
 		t = dep
@@ -1206,10 +1617,22 @@ func computeSimTimes(profile *rawTimingProfile, entryKey string, pts []resolvedP
 				}
 				t += travel
 			}
+			t += pts[next].Allowance
 		}
 	}
 
 	return calls, t, nil
+}
+
+func shiftSimCalls(calls []simCall, delta int) {
+	for i := range calls {
+		if calls[i].Arr != nil {
+			*calls[i].Arr += delta
+		}
+		if calls[i].Dep != nil {
+			*calls[i].Dep += delta
+		}
+	}
 }
 
 func reverseStaticList(l []staticEntry) []staticEntry {
@@ -1327,6 +1750,7 @@ func effectiveStatic(svc *rawService, tmpl *rawTemplate) *rawStaticRef {
 }
 
 type loadedData struct {
+	manifest        *Manifest
 	diagrams        map[string]*rawDiagram
 	templates       map[string]*rawTemplate
 	consists        map[string]*rawConsist
@@ -1337,13 +1761,117 @@ type loadedData struct {
 	stationDefs     map[string]rawStationDef
 }
 
+type timingReference struct {
+	Mode       string
+	Tiploc     string
+	Occurrence int
+	Time       int
+}
+
+func resolveTimingReference(svc rawService, manifest *Manifest) (timingReference, error) {
+	occ := svc.Occurrence
+	if occ == 0 {
+		occ = 1
+	}
+	parse := func(label, value string) (int, error) {
+		if value == "" {
+			return 0, fmt.Errorf("service %s: missing timing value for %s", svc.Headcode, label)
+		}
+		t, err := parseClockHHMM(value)
+		if err != nil {
+			return 0, fmt.Errorf("service %s %s: %w", svc.Headcode, label, err)
+		}
+		return t, nil
+	}
+
+	var refs []timingReference
+	if svc.Departs != "" {
+		t, err := parse("departs", svc.Departs)
+		if err != nil {
+			return timingReference{}, err
+		}
+		refs = append(refs, timingReference{Mode: "enters", Occurrence: occ, Time: t})
+	}
+	if svc.Enters != "" {
+		t, err := parse("enters", svc.Enters)
+		if err != nil {
+			return timingReference{}, err
+		}
+		refs = append(refs, timingReference{Mode: "enters", Occurrence: occ, Time: t})
+	}
+	if svc.Exits != "" {
+		t, err := parse("exits", svc.Exits)
+		if err != nil {
+			return timingReference{}, err
+		}
+		refs = append(refs, timingReference{Mode: "exits", Occurrence: occ, Time: t})
+	}
+	if svc.TimingRef != "" {
+		t, err := parse("timing", svc.TimingRef)
+		if err != nil {
+			return timingReference{}, err
+		}
+		mode := manifest.Timing.TimingMode
+		if mode == "" {
+			mode = "enters"
+		}
+		ref := timingReference{Mode: mode, Tiploc: manifest.Timing.Tiploc, Occurrence: manifest.Timing.Occurrence, Time: t}
+		if ref.Occurrence == 0 {
+			ref.Occurrence = 1
+		}
+		refs = append(refs, ref)
+	}
+	for tiploc, value := range svc.TiplocTiming {
+		t, err := parse(tiploc, value)
+		if err != nil {
+			return timingReference{}, err
+		}
+		refs = append(refs, timingReference{Mode: "tiploc", Tiploc: tiploc, Occurrence: occ, Time: t})
+	}
+	if len(refs) == 0 {
+		return timingReference{}, fmt.Errorf("service %s has no timing reference (departs, enters, exits, timing, or TIPLOC)", svc.Headcode)
+	}
+	if len(refs) > 1 {
+		return timingReference{}, fmt.Errorf("service %s has multiple timing references; use only one of departs, enters, exits, timing, or a TIPLOC", svc.Headcode)
+	}
+	if refs[0].Mode == "tiploc" && refs[0].Tiploc == "" {
+		return timingReference{}, fmt.Errorf("service %s: tiploc timing reference requires a TIPLOC", svc.Headcode)
+	}
+	return refs[0], nil
+}
+
+func entryTimeForReference(ref timingReference, calls []simCall, exitOffset int) (int, error) {
+	switch ref.Mode {
+	case "", "enters":
+		return ref.Time, nil
+	case "exits":
+		return ref.Time - exitOffset, nil
+	case "tiploc":
+		for _, c := range calls {
+			if c.Kind != SimulatedLocation || c.Tiploc != ref.Tiploc || c.Occurrence != ref.Occurrence {
+				continue
+			}
+			if c.Arr != nil {
+				return ref.Time - *c.Arr, nil
+			}
+			if c.Dep != nil {
+				return ref.Time - *c.Dep, nil
+			}
+			return 0, fmt.Errorf("TIPLOC %s occurrence %d has no time to anchor", ref.Tiploc, ref.Occurrence)
+		}
+		return 0, fmt.Errorf("TIPLOC %s occurrence %d not found in service", ref.Tiploc, ref.Occurrence)
+	default:
+		return 0, fmt.Errorf("unsupported timing mode %q", ref.Mode)
+	}
+}
+
 func buildOutput(dir string, diagramFilter string) (*OutputDoc, error) {
 	manifest, err := loadManifest(dir)
 	if err != nil {
 		return nil, err
 	}
 
-	ld := loadedData{}
+	ld := loadedData{manifest: manifest}
 	var err2 error
 	if ld.diagrams, err2 = loadDiagrams(dir); err2 != nil {
 		return nil, err2
@@ -1488,12 +2016,94 @@ func buildStationsOut(defs map[string]rawStationDef) []StationOut {
 	return out
 }
 
+func activityDurationsForConsists(consistIDs []string, consists map[string]*rawConsist) map[string]int {
+	out := map[string]int{}
+	add := func(name string, r *rawActivityRange) {
+		if r == nil {
+			return
+		}
+		if r.Max > out[name] {
+			out[name] = r.Max
+		}
+	}
+	for _, id := range consistIDs {
+		c := consists[id]
+		if c == nil || c.Activities == nil {
+			continue
+		}
+		add("reverse", c.Activities.Reverse)
+		add("attach", c.Activities.Attach)
+		add("detach", c.Activities.Detach)
+	}
+	return out
+}
+
+func resolveBool(service, diagram, template *bool) *bool {
+	switch {
+	case service != nil:
+		return service
+	case diagram != nil:
+		return diagram
+	case template != nil:
+		return template
+	default:
+		return nil
+	}
+}
+
+func boolValueFromPtr(v *bool) bool {
+	return v != nil && *v
+}
+
+func scenarioOutFromRaw(s *rawScenario) *ScenarioOut {
+	if s == nil {
+		return nil
+	}
+	return &ScenarioOut{
+		BaseDelay:      s.BaseDelay,
+		DelayedPct:     s.DelayedPct,
+		DisruptionPct:  s.DisruptionPct,
+		SetSwapPct:     s.SetSwapPct,
+		RunsAsRequired: s.RunsAsRequired,
+	}
+}
+
+func serviceScenarioOut(diagram *rawScenario, svc rawService) *ScenarioOut {
+	hasOverride := svc.BaseDelay != nil || svc.DelayedPct != nil || svc.DisruptionPct != nil ||
+		svc.SetSwapPct != nil || svc.RunsAsRequired != nil
+	if !hasOverride {
+		return nil
+	}
+	out := ScenarioOut{}
+	if diagram != nil {
+		out = *scenarioOutFromRaw(diagram)
+	}
+	if svc.BaseDelay != nil {
+		out.BaseDelay = *svc.BaseDelay
+	}
+	if svc.DelayedPct != nil {
+		out.DelayedPct = *svc.DelayedPct
+	}
+	if svc.DisruptionPct != nil {
+		out.DisruptionPct = *svc.DisruptionPct
+	}
+	if svc.SetSwapPct != nil {
+		out.SetSwapPct = *svc.SetSwapPct
+	}
+	if svc.RunsAsRequired != nil {
+		out.RunsAsRequired = svc.RunsAsRequired
+	}
+	return &out
+}
+
 func buildDiagramOut(diagID string, ld loadedData) (DiagramOut, error) {
 	d := ld.diagrams[diagID]
 
 	out := DiagramOut{ID: diagID}
 
 	out.Operator = d.Diagram.Operator
+	out.DoNotAdvertise = boolValueFromPtr(d.Diagram.DoNotAdvertise)
+	out.AllowEarly = d.Diagram.AllowEarly
 
 	for _, e := range d.Diagram.Allocation {
 		out.Allocation = append(out.Allocation, AllocEntryOut{Consist: e.Consist, Diagram: e.Diagram, Weight: e.Weight})
@@ -1501,13 +2111,7 @@ func buildDiagramOut(diagID string, ld loadedData) (DiagramOut, error) {
 	for _, e := range d.Diagram.SetSwapPool {
 		out.SetSwapPool = append(out.SetSwapPool, AllocEntryOut{Consist: e.Consist, Diagram: e.Diagram, Weight: e.Weight})
 	}
-	if d.Scenario != nil {
-		out.Scenario = &ScenarioOut{
-			BaseDelay: d.Scenario.BaseDelay, DelayedPct: d.Scenario.DelayedPct,
-			DisruptionPct: d.Scenario.DisruptionPct, SetSwapPct: d.Scenario.SetSwapPct,
-			RunsAsRequired: d.Scenario.RunsAsRequired,
-		}
-	}
+	out.Scenario = scenarioOutFromRaw(d.Scenario)
 
 	unitSet := map[string]bool{}
 	if err := gatherDiagramUnits(diagID, ld.diagrams, ld.consists, map[string]bool{}, unitSet); err != nil {
@@ -1519,13 +2123,23 @@ func buildDiagramOut(diagID string, ld loadedData) (DiagramOut, error) {
 	}
 	sort.Strings(allUnits)
 
+	consistSet := map[string]bool{}
+	if err := gatherDiagramConsists(diagID, ld.diagrams, ld.consists, map[string]bool{}, consistSet); err != nil {
+		return out, err
+	}
+	var allConsists []string
+	for c := range consistSet {
+		allConsists = append(allConsists, c)
+	}
+	sort.Strings(allConsists)
+
 	for _, baseSvc := range d.Service {
 		services, err := expandServices(baseSvc)
 		if err != nil {
 			return out, err
 		}
 		for _, svc := range services {
-			svcOut, err := convertService(diagID, svc, allUnits, ld)
+			svcOut, err := convertService(diagID, svc, allUnits, allConsists, d, ld)
 			if err != nil {
 				return out, fmt.Errorf("service %s: %w", svc.Headcode, err)
 			}
@@ -1536,13 +2150,13 @@ func buildDiagramOut(diagID string, ld loadedData) (DiagramOut, error) {
 	return out, nil
 }
 
-func convertService(diagID string, svc rawService, allUnits []string, ld loadedData) (ServiceOut, error) {
+func convertService(diagID string, svc rawService, allUnits []string, allConsists []string, diagram *rawDiagram, ld loadedData) (ServiceOut, error) {
 	tmpl, ok := ld.templates[svc.Template]
 	if !ok {
 		return ServiceOut{}, fmt.Errorf("template %q not found", svc.Template)
 	}
 
-	departs, err := parseClockHHMM(svc.Departs)
+	ref, err := resolveTimingReference(svc, ld.manifest)
 	if err != nil {
 		return ServiceOut{}, err
 	}
@@ -1557,7 +2171,7 @@ func convertService(diagID string, svc rawService, allUnits []string, ld loadedD
 		return ServiceOut{}, err
 	}
 
-	pts, err := buildPoints(tmpl, svc)
+	pts, err := buildPoints(tmpl, svc, activityDurationsForConsists(allConsists, ld.consists))
 	if err != nil {
 		return ServiceOut{}, err
 	}
@@ -1590,6 +2204,17 @@ func convertService(diagID string, svc rawService, allUnits []string, ld loadedD
 	staticRef := effectiveStatic(&svc, tmpl)
 	var beforeList []staticEntry
 	var afterList []staticEntry
+	var simCalls []simCall
+	var exitTime int
+
+	offsetCalls, exitOffset, err := computeSimOffsets(profile, entryKey, pts)
+	if err != nil {
+		return ServiceOut{}, err
+	}
+	departs, err := entryTimeForReference(ref, offsetCalls, exitOffset)
+	if err != nil {
+		return ServiceOut{}, err
+	}
 
 	if staticRef != nil {
 		st, ok := ld.staticTemplates[staticRef.Template]
@@ -1621,10 +2246,9 @@ func convertService(diagID string, svc rawService, allUnits []string, ld loadedD
 		}
 	}
 
-	simCalls, exitTime, err := computeSimTimes(profile, entryKey, pts, departs)
-	if err != nil {
-		return ServiceOut{}, err
-	}
+	simCalls = offsetCalls
+	shiftSimCalls(simCalls, departs)
+	exitTime = departs + exitOffset
 
 	if staticRef != nil {
 		after, err = computeAfterTimes(afterList, exitTime)
@@ -1653,12 +2277,15 @@ func convertService(diagID string, svc rawService, allUnits []string, ld loadedD
 	}
 
 	svcOut := ServiceOut{
-		Headcode:   svc.Headcode,
-		Diagram:    diagID,
-		EntryTime:  formatClock(departs),
-		TimingLoad: profileName,
-		Entry:      entry,
-		Exit:       exit,
+		Headcode:       svc.Headcode,
+		Diagram:        diagID,
+		EntryTime:      formatClock(departs),
+		TimingLoad:     profileName,
+		DoNotAdvertise: boolValueFromPtr(resolveBool(svc.DoNotAdvertise, diagram.Diagram.DoNotAdvertise, tmpl.Template.DoNotAdvertise)),
+		AllowEarly:     resolveBool(svc.AllowEarly, diagram.Diagram.AllowEarly, tmpl.Template.AllowEarly),
+		Scenario:       serviceScenarioOut(diagram.Scenario, svc),
+		Entry:          entry,
+		Exit:           exit,
 	}
 
 	for _, c := range before {
@@ -1680,15 +2307,17 @@ func convertService(diagID string, svc rawService, allUnits []string, ld loadedD
 
 		case SimulatedLocation:
 			svcOut.Timetable = append(svcOut.Timetable, TimetableEntryOut{
-				Type:       "simulated",
-				Tiploc:     c.Tiploc,
-				Arr:        formatClockPtr(c.Arr),
-				Dep:        formatClockPtr(c.Dep),
-				Plat:       c.Plat,
-				Pass:       c.Pass,
-				Path:       c.Path,
-				StopPct:    c.StopPct,
-				Activities: c.Activities,
+				Type:                "simulated",
+				Tiploc:              c.Tiploc,
+				Arr:                 formatClockPtr(c.Arr),
+				Dep:                 formatClockPtr(c.Dep),
+				Plat:                c.Plat,
+				Pass:                c.Pass,
+				Path:                c.Path,
+				StopPct:             c.StopPct,
+				AllowEarly:          c.AllowEarly,
+				SignallerPermission: c.SignallerPermission,
+				Activities:          c.Activities,
 			})
 		}
 	}

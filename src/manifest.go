@@ -21,6 +21,7 @@ import (
 type Manifest struct {
 	Manifest ManifestMeta   `toml:"manifest"`
 	Target   ManifestTarget `toml:"target"`
+	Timing   ManifestTiming `toml:"timing"`
 }
 
 type ManifestMeta struct {
@@ -34,6 +35,12 @@ type ManifestTarget struct {
 	Game       string `toml:"game"`
 	Sim        string `toml:"sim"`
 	SimVersion string `toml:"sim_version"`
+}
+
+type ManifestTiming struct {
+	TimingMode string `toml:"timing_mode" json:"timing_mode,omitempty"`
+	Tiploc     string `toml:"tiploc,omitempty" json:"tiploc,omitempty"`
+	Occurrence int    `toml:"occurrence,omitempty" json:"occurrence,omitempty"`
 }
 
 func loadManifest(dir string) (*Manifest, error) {

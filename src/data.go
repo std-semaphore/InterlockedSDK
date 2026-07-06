@@ -71,9 +71,15 @@ type CurvePoint struct {
 }
 
 type TrackSection struct {
-	Name     string
-	IsPoints bool
-	Curve    []CurvePoint
+	Name       string
+	IsPoints   bool
+	Curve      []CurvePoint
+	SpeedLimit []SpeedLimit
+}
+
+type SpeedLimit struct {
+	AppliesFrom    float64
+	PermittedSpeed float64
 }
 
 type Object struct {
@@ -129,6 +135,12 @@ func ParseTrackData(text string) (*TrackData, error) {
 				Pos: toPoint2D(cp.Position),
 				In:  toPoint2D(cp.In),
 				Out: toPoint2D(cp.Out),
+			})
+		}
+		for _, sl := range sec.SpeedLimit {
+			ts.SpeedLimit = append(ts.SpeedLimit, SpeedLimit{
+				AppliesFrom:    sl.AppliesFrom,
+				PermittedSpeed: sl.PermittedSpeed,
 			})
 		}
 		// Make sure every section's curve runs right-to-left ("up"),

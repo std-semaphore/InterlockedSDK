@@ -588,7 +588,11 @@ func mapCmd() *cobra.Command {
 				dataPath = args[0]
 			}
 			if dataPath == "" {
-				dataPath = "data/kestby.toml"
+				exePath, err := os.Executable()
+				if err != nil {
+					return fmt.Errorf("get executable path: %w", err)
+				}
+				dataPath = filepath.Join(filepath.Dir(exePath), "data", "kestby.toml")
 			}
 
 			layout, err := openFile(dataPath)
@@ -632,7 +636,7 @@ func mapCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&dataPath, "data", "d", "", "Track data file (default: data/kestby.toml)")
+	cmd.Flags().StringVarP(&dataPath, "data", "d", "", "Track data file (default: ./data/kestby.toml relative to binary)")
 	return cmd
 }
 

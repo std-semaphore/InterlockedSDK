@@ -32,6 +32,7 @@ func main() {
 		downloadCmd(),
 		mapCmd(),
 		convertCmd(),
+		timingProfileCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
